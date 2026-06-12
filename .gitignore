@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+venv/
+env/
+
+# Generated results and profiler outputs
+results/
+*.log
+*.nsys-rep
+*.ncu-rep
+*.sqlite
+
+# Model/checkpoint artifacts
+*.bin
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+
+# Local editor and OS files
+.DS_Store
+.idea/
+.vscode/
+
