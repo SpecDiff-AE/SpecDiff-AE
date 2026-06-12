@@ -225,6 +225,7 @@ def evaluate_run_requirements(
     profile_result: dict[str, Any] | None,
     *,
     require_apw: bool,
+    require_lds_staging: bool,
     require_rocprof_compute: bool,
 ) -> dict[str, Any]:
     failures: list[dict[str, str]] = []
@@ -239,14 +240,38 @@ def evaluate_run_requirements(
                 failures.append({"check": mode, "reason": str(row.get("error"))})
             elif row.get("apw_enabled") is not True:
                 failures.append({"check": mode, "reason": "hip_apw_not_enabled"})
+    if require_lds_staging:
         tma_row = rows_by_mode.get("arena_apw_tma")
         if tma_row is None:
             failures.append({"check": "arena_apw_tma", "reason": "missing_result"})
+        elif tma_row.get("error"):
+            failures.append({"check": "arena_apw_tma", "reason": str(tma_row.get("error"))})
         elif tma_row.get("tma_analogue_backend") != "lds_tile_staging":
             failures.append(
                 {
                     "check": "arena_apw_tma",
                     "reason": "lds_tile_staging_not_reported",
+                }
+            )
+        elif int(tma_row.get("lds_tile_bytes") or 0) <= 0:
+            failures.append(
+                {
+                    "check": "arena_apw_tma",
+                    "reason": "lds_tile_bytes_not_positive",
+                }
+            )
+        elif int(tma_row.get("lds_vector_width_bytes") or 0) < 16:
+            failures.append(
+                {
+                    "check": "arena_apw_tma",
+                    "reason": "vectorized_lds_staging_not_reported",
+                }
+            )
+        elif "lds_tile_staging" not in str(tma_row.get("amd_feature_path") or ""):
+            failures.append(
+                {
+                    "check": "arena_apw_tma",
+                    "reason": "amd_feature_path_missing_lds_staging",
                 }
             )
 
@@ -276,6 +301,7 @@ def evaluate_run_requirements(
         "passed": len(failures) == 0,
         "required": {
             "hip_apw_enabled": bool(require_apw),
+            "lds_tma_analogue_enabled": bool(require_lds_staging),
             "rocprof_compute_success": bool(require_rocprof_compute),
         },
         "failures": failures,
@@ -288,8 +314,8 @@ def write_report(rows: list[dict[str, Any]], out_dir: Path, profiler_tools: dict
     lines = [
         "# AMD ROCm Chunk Arena Profile",
         "",
-        "| Mode | Description | Event ms | Speedup vs sparse | Logical GB/s | APW | Error |",
-        "|---|---|---:|---:|---:|---|---|",
+        "| Mode | Description | Event ms | Speedup vs sparse | Logical GB/s | APW | LDS/TMA analogue | Error |",
+        "|---|---|---:|---:|---:|---|---|---|",
     ]
     descriptions = dict(MODES)
     for row in rows:
@@ -302,14 +328,16 @@ def write_report(rows: list[dict[str, Any]], out_dir: Path, profiler_tools: dict
         lines.append(
             f"| {row.get('mode')} | {descriptions.get(row.get('mode'), '')} | "
             f"{fmt(elapsed, 3)} | {fmt(speedup, 2)}x | {fmt(gbps, 2)} | "
-            f"{fmt(row.get('apw_enabled'))} | {row.get('error', '')} |"
+            f"{fmt(row.get('apw_enabled'))} | "
+            f"{row.get('tma_analogue_backend', 'none')} | "
+            f"{row.get('error', '')} |"
         )
     lines.extend(
         [
             "",
             "Notes:",
             "- `arena_apw` uses HIP's access-policy-window stream attribute when the ROCm runtime exposes it.",
-            "- `arena_apw_tma` is the AMD analogue of the CUDA APW+TMA experiment: contiguous arena data is staged into LDS tiles and reused there.",
+            "- `arena_apw_tma` is the AMD analogue of the CUDA APW+TMA experiment: contiguous arena data is staged into AMD LDS tiles with 16-byte vectorized loads and reused there.",
             "- HIP does not expose CUDA cooperative-groups `memcpy_async`; this benchmark therefore reports an LDS staging path, not a hardware-identical Hopper TMA path.",
             "",
             "Profiler tools detected:",
@@ -356,6 +384,11 @@ def main() -> int:
         help="Fail if APW modes do not report hipStreamSetAttribute success.",
     )
     parser.add_argument(
+        "--require-lds-staging",
+        action="store_true",
+        help="Fail if arena_apw_tma does not report AMD LDS tile staging.",
+    )
+    parser.add_argument(
         "--require-rocprof-compute",
         action="store_true",
         help="Fail if ROCm Compute Profiler is unavailable or any profile run fails.",
@@ -367,6 +400,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     require_apw = args.require_apw or args.strict
+    require_lds_staging = args.require_lds_staging or args.strict
     require_rocprof_compute = args.require_rocprof_compute or (
         args.strict and args.run_rocprof_compute
     )
@@ -386,6 +420,7 @@ def main() -> int:
         rows,
         profile_result,
         require_apw=require_apw,
+        require_lds_staging=require_lds_staging,
         require_rocprof_compute=require_rocprof_compute,
     )
     (args.out_dir / "strict_requirements.json").write_text(

@@ -36,6 +36,7 @@ struct Args {
   int timing_iters = 30;
   int block_threads = 256;
   int lds_tile_bytes = 16384;
+  int lds_vector_width_bytes = 16;
   float apw_hit_ratio = 0.85f;
   unsigned int seed = 20260612u;
 };
@@ -162,6 +163,7 @@ __global__ void arena_lds_kernel(const float* __restrict__ arena,
                                  int passes,
                                  int tile_elems) {
   extern __shared__ float lds[];
+  constexpr int kVectorElems = 4;
   float local = 0.0f;
   size_t tiles = (active_elems + tile_elems - 1) / tile_elems;
 
@@ -170,7 +172,16 @@ __global__ void arena_lds_kernel(const float* __restrict__ arena,
     size_t remaining = active_elems - start;
     int count = static_cast<int>(
         remaining < size_t(tile_elems) ? remaining : size_t(tile_elems));
-    for (int local_idx = threadIdx.x; local_idx < count; local_idx += blockDim.x) {
+
+    int vec_count = count / kVectorElems;
+    auto* lds_vec = reinterpret_cast<float4*>(lds);
+    const auto* arena_vec = reinterpret_cast<const float4*>(arena + start);
+    for (int vec_idx = threadIdx.x; vec_idx < vec_count; vec_idx += blockDim.x) {
+      lds_vec[vec_idx] = arena_vec[vec_idx];
+    }
+    for (int local_idx = vec_count * kVectorElems + threadIdx.x;
+         local_idx < count;
+         local_idx += blockDim.x) {
       lds[local_idx] = arena[start + local_idx];
     }
     __syncthreads();
@@ -196,9 +207,11 @@ void configure_apw(hipStream_t stream,
                    size_t bytes,
                    float hit_ratio,
                    bool* enabled,
-                   size_t* window_bytes) {
+                   size_t* window_bytes,
+                   std::string* error) {
   *enabled = false;
   *window_bytes = 0;
+  *error = "";
   hipStreamAttrValue attr{};
   attr.accessPolicyWindow.base_ptr = const_cast<void*>(ptr);
   attr.accessPolicyWindow.num_bytes = bytes;
@@ -210,6 +223,8 @@ void configure_apw(hipStream_t stream,
   if (err == hipSuccess) {
     *enabled = true;
     *window_bytes = bytes;
+  } else {
+    *error = hipGetErrorString(err);
   }
 }
 
@@ -286,6 +301,10 @@ int main(int argc, char** argv) {
   HIP_CHECK(hipGetDevice(&device));
   hipDeviceProp_t props{};
   HIP_CHECK(hipGetDeviceProperties(&props, device));
+  int shared_mem_per_block = static_cast<int>(props.sharedMemPerBlock);
+  args.lds_tile_bytes = std::max(
+      16,
+      std::min(args.lds_tile_bytes, (shared_mem_per_block / 16) * 16));
   grid_blocks = std::max(1, grid_blocks * props.multiProcessorCount);
 
   float* full = nullptr;
@@ -313,11 +332,13 @@ int main(int argc, char** argv) {
 
   bool apw_enabled = false;
   size_t apw_window_bytes = 0;
+  std::string apw_error;
   if (args.mode == "arena_apw" || args.mode == "arena_apw_lds" ||
       args.mode == "arena_apw_tma") {
     configure_apw(stream, arena, active_elems * sizeof(float), args.apw_hit_ratio,
-                  &apw_enabled, &apw_window_bytes);
+                  &apw_enabled, &apw_window_bytes, &apw_error);
   }
+  bool lds_tma_mode = args.mode == "arena_apw_lds" || args.mode == "arena_apw_tma";
 
   for (int i = 0; i < args.warmup; ++i) {
     launch_target(args, stream, full, indices, arena, out, sink, active_tokens,
@@ -348,16 +369,22 @@ int main(int argc, char** argv) {
             << active_elems * sizeof(float) * size_t(args.passes) << ",\n";
   std::cout << "  \"apw_enabled\": " << (apw_enabled ? "true" : "false") << ",\n";
   std::cout << "  \"apw_window_bytes\": " << apw_window_bytes << ",\n";
+  std::cout << "  \"apw_error\": \"" << apw_error << "\",\n";
   std::cout << "  \"tma_analogue_backend\": \""
-            << ((args.mode == "arena_apw_lds" || args.mode == "arena_apw_tma")
-                    ? "lds_tile_staging"
-                    : "none")
+            << (lds_tma_mode ? "lds_tile_staging" : "none")
             << "\",\n";
-  std::cout << "  \"lds_tile_bytes\": "
-            << ((args.mode == "arena_apw_lds" || args.mode == "arena_apw_tma")
-                    ? args.lds_tile_bytes
-                    : 0)
+  std::cout << "  \"lds_tile_bytes\": " << (lds_tma_mode ? args.lds_tile_bytes : 0)
             << ",\n";
+  std::cout << "  \"lds_vector_width_bytes\": "
+            << (lds_tma_mode ? args.lds_vector_width_bytes : 0) << ",\n";
+  std::cout << "  \"amd_feature_path\": \""
+            << (lds_tma_mode
+                    ? (apw_enabled ? "hip_access_policy_window+lds_tile_staging_b128"
+                                   : "apw_failed+lds_tile_staging_b128")
+                    : (apw_enabled ? "hip_access_policy_window" : "none"))
+            << "\",\n";
+  std::cout << "  \"wavefront_size\": " << props.warpSize << ",\n";
+  std::cout << "  \"compute_units\": " << props.multiProcessorCount << ",\n";
   std::cout << "  \"device\": \"" << props.name << "\"\n";
   std::cout << "}\n";
 

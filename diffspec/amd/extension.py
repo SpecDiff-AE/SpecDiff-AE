@@ -45,6 +45,18 @@ _LAST_STATUS = HipRuntimeExtensionStatus(
 )
 
 
+def _hip_extension_compile_flags() -> tuple[list[str], list[str]]:
+    """Return host/device flags needed by the ROCm extension.
+
+    PyTorch compiles ``.cpp`` sources with the host C++ compiler even for a
+    ROCm extension.  The explicit project macro keeps the host binding on the
+    HIP runtime path without depending on compiler-private HIP macros.
+    """
+
+    common = ["-O3", "-DDIFFSPEC_WITH_HIP=1"]
+    return common, common
+
+
 @lru_cache(maxsize=1)
 def load_hip_runtime_extension(verbose: bool = False) -> Any | None:
     """Compile and load the tiny HIP runtime helper extension if possible."""
@@ -91,8 +103,8 @@ def load_hip_runtime_extension(verbose: bool = False) -> Any | None:
             sources=[str(source) for source in sources],
             verbose=verbose,
             with_cuda=True,
-            extra_cflags=["-O3"],
-            extra_cuda_cflags=["-O3"],
+            extra_cflags=_hip_extension_compile_flags()[0],
+            extra_cuda_cflags=_hip_extension_compile_flags()[1],
         )
         _LAST_STATUS = HipRuntimeExtensionStatus(
             available=True,

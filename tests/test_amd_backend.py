@@ -13,6 +13,7 @@ from diffspec.amd import (
     get_amd_gpu_info,
     get_hip_runtime_extension_status,
 )
+from diffspec.amd.extension import _hip_extension_compile_flags
 from diffspec.core.config import DiffSpecConfig
 from diffspec.core.diffspec_engine import DiffSpecEngine
 from diffspec.core.kv_cache.chunk_arena import ChunkArena
@@ -175,6 +176,13 @@ def test_hip_runtime_extension_status_is_structured_without_rocm():
     assert "reason" in status
 
 
+def test_hip_runtime_extension_uses_explicit_hip_compile_macro():
+    host_flags, device_flags = _hip_extension_compile_flags()
+
+    assert "-DDIFFSPEC_WITH_HIP=1" in host_flags
+    assert "-DDIFFSPEC_WITH_HIP=1" in device_flags
+
+
 def test_validate_rocm_backend_allow_no_rocm_is_structured():
     repo_root = Path(__file__).resolve().parents[1]
     proc = subprocess.run(
@@ -239,6 +247,9 @@ def test_hip_profile_requirements_fail_when_apw_modes_do_not_enable_apw():
             "elapsed_ms": 1.0,
             "apw_enabled": True,
             "tma_analogue_backend": "lds_tile_staging",
+            "lds_tile_bytes": 16384,
+            "lds_vector_width_bytes": 16,
+            "amd_feature_path": "hip_access_policy_window+lds_tile_staging_b128",
         },
     ]
 
@@ -246,6 +257,7 @@ def test_hip_profile_requirements_fail_when_apw_modes_do_not_enable_apw():
         rows,
         profile_result=None,
         require_apw=True,
+        require_lds_staging=True,
         require_rocprof_compute=False,
     )
 
@@ -265,6 +277,9 @@ def test_hip_profile_requirements_fail_when_tma_mode_does_not_stage_lds():
             "elapsed_ms": 1.0,
             "apw_enabled": True,
             "tma_analogue_backend": "none",
+            "lds_tile_bytes": 0,
+            "lds_vector_width_bytes": 0,
+            "amd_feature_path": "none",
         },
     ]
 
@@ -272,10 +287,41 @@ def test_hip_profile_requirements_fail_when_tma_mode_does_not_stage_lds():
         rows,
         profile_result=None,
         require_apw=True,
+        require_lds_staging=True,
         require_rocprof_compute=False,
     )
 
     assert result["passed"] is False
     assert result["failures"] == [
         {"check": "arena_apw_tma", "reason": "lds_tile_staging_not_reported"}
+    ]
+
+
+def test_hip_profile_requirements_fail_when_lds_vector_path_is_missing():
+    rows = [
+        {"mode": "baseline_sparse", "elapsed_ms": 3.0},
+        {"mode": "arena", "elapsed_ms": 2.0},
+        {"mode": "arena_apw", "elapsed_ms": 1.5, "apw_enabled": True},
+        {
+            "mode": "arena_apw_tma",
+            "elapsed_ms": 1.0,
+            "apw_enabled": True,
+            "tma_analogue_backend": "lds_tile_staging",
+            "lds_tile_bytes": 16384,
+            "lds_vector_width_bytes": 4,
+            "amd_feature_path": "hip_access_policy_window+lds_tile_staging_b128",
+        },
+    ]
+
+    result = evaluate_run_requirements(
+        rows,
+        profile_result=None,
+        require_apw=True,
+        require_lds_staging=True,
+        require_rocprof_compute=False,
+    )
+
+    assert result["passed"] is False
+    assert result["failures"] == [
+        {"check": "arena_apw_tma", "reason": "vectorized_lds_staging_not_reported"}
     ]

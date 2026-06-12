@@ -1,6 +1,6 @@
 #include <torch/extension.h>
 
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
 #include <hip/hip_runtime.h>
 #endif
 
@@ -58,7 +58,7 @@ py::dict set_access_policy_window(std::uint64_t stream_handle,
                                   std::uint64_t base_ptr,
                                   std::size_t window_bytes,
                                   double hit_ratio) {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
   if (stream_handle == 0 || base_ptr == 0 || window_bytes == 0) {
     return make_result(false, 0, "empty_stream_or_window");
   }
@@ -87,7 +87,7 @@ py::dict set_access_policy_window(std::uint64_t stream_handle,
 }
 
 py::dict clear_access_policy_window(std::uint64_t stream_handle) {
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
   if (stream_handle == 0) {
     return make_result(false, 0, "empty_stream");
   }
@@ -111,7 +111,7 @@ py::dict compact_kv_spans(torch::Tensor src,
                           torch::Tensor spans,
                           std::int64_t active_len) {
   validate_tensor_pair(src, dst, spans, active_len);
-#if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+#if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
   diffspec::amd::compact_kv_spans_launcher(src, dst, spans, active_len);
   py::dict out;
   out["applied"] = true;

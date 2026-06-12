@@ -10,14 +10,16 @@ the NVIDIA path: CUDA/NVIDIA runs continue to use the existing
 | NVIDIA mechanism | AMD ROCm path | Implementation |
 |---|---|---|
 | APW / persisting L2 access window | HIP access-policy-window stream attribute | `hip_runtime.cpp` calls `hipStreamSetAttribute(..., hipStreamAttributeAccessPolicyWindow, ...)`; Python exposes it through `apply_residency_hint`. |
-| TMA-style bulk working-set reuse | Contiguous KV arena plus LDS tile staging | `AmdChunkArena` compacts selected KV spans into a contiguous prefix with the optional HIP compact kernel; `kv_access_profile.hip` compares direct arena reads with LDS tile staging and reuse. |
+| TMA-style bulk working-set reuse | Contiguous KV arena plus AMD LDS tile staging | `AmdChunkArena` compacts selected KV spans into an active arena with the optional HIP compact kernel; `kv_access_profile.hip` compares direct arena reads with 16-byte vectorized LDS tile staging and reuse. |
 | Sparse KV gather baseline | HIP sparse gather kernel | `baseline_sparse` reads selected tokens from full KV to measure the cost avoided by arena staging. |
 
 HIP exposes an APW-like stream attribute, but it does not expose CUDA Hopper TMA
 or CUDA cooperative-groups `memcpy_async`. For AMD we therefore claim an
 equivalent memory-system optimization goal, not a hardware-identical TMA API:
-the active KV working set is made contiguous, optionally marked with HIP APW,
-and repeatedly consumed from LDS tiles.
+the active KV working set is made arena-local, optionally marked with HIP APW,
+and the AMD profiling path repeatedly consumes it from LDS tiles. The strict
+profiler gate requires `arena_apw_tma` to report `lds_tile_staging`,
+positive `lds_tile_bytes`, and a 16-byte vectorized LDS staging path.
 
 ## Runtime Integration
 
@@ -116,7 +118,8 @@ The four measured modes are:
 - `arena`: reads from a contiguous active Chunk Arena.
 - `arena_apw`: `arena` plus HIP access-policy-window residency hint.
 - `arena_apw_tma`: `arena_apw` plus LDS tile staging and reuse. This is the
-  AMD TMA analogue; `tma_analogue_backend` must be `lds_tile_staging`.
+  AMD TMA analogue; `tma_analogue_backend` must be `lds_tile_staging` and
+  `lds_vector_width_bytes` must be at least `16`.
 
 To collect native hardware counters on an AMD host:
 
@@ -143,7 +146,10 @@ Reviewer-facing metrics to report from ROCm Compute Profiler:
 
 The profiler runner writes `strict_requirements.json`. In strict mode, the
 file must show `"passed": true`; otherwise the run should not be used as AMD
-APW/LDS evidence.
+APW/LDS evidence. In strict mode, APW failures include the HIP runtime error in
+`apw_error`, and LDS/TMA-analogue failures are reported as
+`lds_tile_staging_not_reported`, `lds_tile_bytes_not_positive`, or
+`vectorized_lds_staging_not_reported`.
 
 ## NVIDIA Safety
 
