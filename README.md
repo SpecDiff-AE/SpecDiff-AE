@@ -90,10 +90,10 @@ scheduler, and the high-level `DiffSpecEngine` with synthetic CPU inputs.
 ### 3. Run the Benchmark
 
 ```bash
-./scripts/reproduce_llama31_8b.sh --preset smoke --gpu-index 0
+./scripts/reproduce_llama31_8b.sh --preset smoke 
 ```
 
-The smoke preset runs one GovReport 50K-context case with a short tuning pass
+The smoke preset runs one GovReport 64K-context case with a short tuning pass
 and a short final paired Auto-vs-DiffSpec evaluation. Results are written to:
 
 ```text
@@ -105,7 +105,7 @@ results/llama31_8b_repro/<preset>_<timestamp>/
 Run the full Llama-3.1-8B reproduction protocol:
 
 ```bash
-./scripts/reproduce_llama31_8b.sh --preset full --gpu-index 0
+./scripts/reproduce_llama31_8b.sh --preset full
 ```
 
 The full preset:
@@ -117,31 +117,28 @@ The full preset:
 - Reports decode-only throughput/speedup and end-to-end throughput/speedup
   separately.
 
-For protocol details, see
-[docs/reproduction_llama31_8b.md](docs/reproduction_llama31_8b.md).
 
 ### Custom Benchmark
 
 ```bash
 ./scripts/reproduce_llama31_8b.sh --preset custom \
-  --data-files "govreport/govreport_16K.jsonl" \
+  --data-files /path/to/data \
   --context-targets "50000" \
   --candidate-configs "64:0.08:8" \
   --policies "online,full,uniform4" \
   --tune-max-new-tokens 128 \
   --eval-max-new-tokens 512 \
-  --gpu-index 0
 ```
 
-### Paired Inference Benchmark
+### Inference Benchmark
 
 ```bash
 python benchmarks/paired_inference_benchmark.py \
   --base_model /path/to/base_model \
   --draft_model /path/to/draft_model \
-  --data_files govreport/govreport_16K.jsonl \
-  --context_targets 50000 \
-  --max_new_tokens 128
+  --data_files /path/to/data \
+  --context_targets 65536 \
+  --max_new_tokens 131072
 ```
 
 ## Profiling
@@ -153,7 +150,7 @@ python benchmarks/collect_ncu_inference.py --help
 ```
 
 This harness collects Nsight Compute metrics for Auto and DiffSpec runs,
-including L2 hit rate, HBM traffic, L1TEX traffic, and kernel occupancy.
+including L2 hit rate, HBM traffic, L1TEX traffic, and achieved occupancy.
 
 
 ## 📄 License
