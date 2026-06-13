@@ -2,6 +2,7 @@
 
 #include <ATen/Dispatch.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <c10/hip/HIPException.h>
 #include <hip/hip_runtime.h>
 
@@ -90,6 +91,7 @@ void compact_kv_spans_launcher(torch::Tensor src,
   const int threads = 256;
   const int blocks = static_cast<int>(
       std::min<std::int64_t>((total_elems + threads - 1) / threads, 65535));
+  const c10::cuda::CUDAGuard device_guard(src.device());
   auto stream = at::cuda::getCurrentCUDAStream(src.device().index()).stream();
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(src.scalar_type(), "compact_kv_spans", [&] {

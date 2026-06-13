@@ -91,7 +91,7 @@ def get_amd_gpu_info(device: int | torch.device | None = None) -> AmdGpuInfo:
         name=getattr(props, "name", None),
         gcn_arch_name=_read_property(props, "gcnArchName", "gcn_arch_name"),
         total_memory=getattr(props, "total_memory", None),
-        l2_cache_size=_read_property(props, "l2_cache_size", "l2CacheSize"),
+        l2_cache_size=_read_property(props, "l2_cache_size", "L2_cache_size", "l2CacheSize"),
         multiprocessor_count=_read_property(
             props,
             "multi_processor_count",

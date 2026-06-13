@@ -34,6 +34,7 @@ class AmdResidencyStatus:
     hit_ratio: float
     reason: str | None = None
     device: dict[str, Any] | None = None
+    runtime: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +46,7 @@ class AmdResidencyStatus:
             "hit_ratio": self.hit_ratio,
             "reason": self.reason,
             "device": self.device,
+            "runtime": self.runtime,
         }
 
 
@@ -157,12 +159,17 @@ def apply_residency_hint(
             device=device_dict,
         )
 
+    device_index = torch.device(tensor.device).index
+    if device_index is None:
+        device_index = torch.cuda.current_device()
     result = ext.set_access_policy_window(
         _stream_handle(stream, tensor.device),
         int(tensor.data_ptr()),
         int(window_bytes),
         float(hit_ratio),
+        int(device_index),
     )
+    runtime = dict(result)
     applied = bool(result.get("applied", False))
     return AmdResidencyStatus(
         requested=True,
@@ -173,6 +180,7 @@ def apply_residency_hint(
         hit_ratio=hit_ratio,
         reason=result.get("reason"),
         device=device_dict,
+        runtime=runtime,
     )
 
 

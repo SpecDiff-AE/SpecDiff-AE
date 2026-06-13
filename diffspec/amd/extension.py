@@ -8,6 +8,9 @@ build.
 
 from __future__ import annotations
 
+import os
+import shutil
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -57,6 +60,44 @@ def _hip_extension_compile_flags() -> tuple[list[str], list[str]]:
     return common, common
 
 
+def _ensure_python_bin_on_path() -> None:
+    """Make console scripts from the active Python environment discoverable."""
+
+    candidate_bins = [
+        str(Path(sys.executable).parent),
+        str(Path(sys.prefix) / "bin"),
+    ]
+    path_parts = os.environ.get("PATH", "").split(os.pathsep)
+    prepend = [path for path in candidate_bins if path and path not in path_parts]
+    if prepend:
+        os.environ["PATH"] = os.pathsep.join([*prepend, *path_parts])
+
+
+def _copy_if_changed(src: Path, dst: Path) -> None:
+    if dst.exists() and dst.read_bytes() == src.read_bytes():
+        return
+    shutil.copy2(src, dst)
+
+
+def _prepare_extension_sources(sources: tuple[Path, ...]) -> tuple[Path, tuple[str, ...]]:
+    """Copy HIP extension sources away from the repo before torch hipifies them."""
+
+    build_root = Path(
+        os.environ.get(
+            "DIFFSPEC_HIP_EXTENSION_BUILD_DIR",
+            Path.home() / ".cache" / "diffspec" / "hip_runtime_extension",
+        )
+    )
+    source_root = build_root / "src"
+    source_root.mkdir(parents=True, exist_ok=True)
+    staged_sources: list[str] = []
+    for source in sources:
+        staged = source_root / source.name
+        _copy_if_changed(source, staged)
+        staged_sources.append(str(staged))
+    return build_root, tuple(staged_sources)
+
+
 @lru_cache(maxsize=1)
 def load_hip_runtime_extension(verbose: bool = False) -> Any | None:
     """Compile and load the tiny HIP runtime helper extension if possible."""
@@ -97,10 +138,15 @@ def load_hip_runtime_extension(verbose: bool = False) -> Any | None:
         )
         return None
 
+    _ensure_python_bin_on_path()
+    build_root, staged_sources = _prepare_extension_sources(sources)
+    build_root.mkdir(parents=True, exist_ok=True)
+
     try:
         module = load(
             name="diffspec_amd_hip_runtime",
-            sources=[str(source) for source in sources],
+            sources=list(staged_sources),
+            build_directory=str(build_root),
             verbose=verbose,
             with_cuda=True,
             extra_cflags=_hip_extension_compile_flags()[0],

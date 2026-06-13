@@ -5,6 +5,7 @@
 #endif
 
 #include <cstdint>
+#include <algorithm>
 #include <string>
 
 namespace py = pybind11;
@@ -26,6 +27,34 @@ py::dict make_result(bool applied,
   out["window_bytes"] = static_cast<unsigned long long>(window_bytes);
   out["reason"] = reason;
   return out;
+}
+
+void clear_last_hip_error() {
+#if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  (void)hipGetLastError();
+#endif
+}
+
+int device_attribute_or_zero(hipDeviceAttribute_t attr, int device_index) {
+#if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
+  if (device_index < 0) {
+    if (hipGetDevice(&device_index) != hipSuccess) {
+      clear_last_hip_error();
+      return 0;
+    }
+  }
+  int value = 0;
+  hipError_t err = hipDeviceGetAttribute(&value, attr, device_index);
+  if (err != hipSuccess) {
+    clear_last_hip_error();
+    return 0;
+  }
+  return value;
+#else
+  (void)attr;
+  (void)device_index;
+  return 0;
+#endif
 }
 
 void validate_tensor_pair(const torch::Tensor& src,
@@ -57,11 +86,29 @@ void validate_tensor_pair(const torch::Tensor& src,
 py::dict set_access_policy_window(std::uint64_t stream_handle,
                                   std::uint64_t base_ptr,
                                   std::size_t window_bytes,
-                                  double hit_ratio) {
+                                  double hit_ratio,
+                                  int device_index) {
 #if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
-  if (stream_handle == 0 || base_ptr == 0 || window_bytes == 0) {
-    return make_result(false, 0, "empty_stream_or_window");
+  if (base_ptr == 0 || window_bytes == 0) {
+    return make_result(false, 0, "empty_window");
   }
+
+  const int access_policy_max_window_size =
+      device_attribute_or_zero(hipDeviceAttributeAccessPolicyMaxWindowSize, device_index);
+  const int persisting_l2_cache_max_size =
+      device_attribute_or_zero(hipDeviceAttributePersistingL2CacheMaxSize, device_index);
+  const int l2_cache_size =
+      device_attribute_or_zero(hipDeviceAttributeL2CacheSize, device_index);
+  if (access_policy_max_window_size <= 0) {
+    py::dict out = make_result(false, 0, "access_policy_window_unsupported");
+    out["access_policy_max_window_size"] = access_policy_max_window_size;
+    out["persisting_l2_cache_max_size"] = persisting_l2_cache_max_size;
+    out["l2_cache_size"] = l2_cache_size;
+    return out;
+  }
+
+  window_bytes = std::min<std::size_t>(
+      window_bytes, static_cast<std::size_t>(access_policy_max_window_size));
 
   hipStream_t stream = reinterpret_cast<hipStream_t>(stream_handle);
   hipStreamAttrValue attr{};
@@ -74,30 +121,40 @@ py::dict set_access_policy_window(std::uint64_t stream_handle,
   hipError_t err = hipStreamSetAttribute(
       stream, hipStreamAttributeAccessPolicyWindow, &attr);
   if (err != hipSuccess) {
-    return make_result(false, 0, hipGetErrorString(err));
+    std::string reason = hipGetErrorString(err);
+    clear_last_hip_error();
+    py::dict out = make_result(false, 0, reason);
+    out["access_policy_max_window_size"] = access_policy_max_window_size;
+    out["persisting_l2_cache_max_size"] = persisting_l2_cache_max_size;
+    out["l2_cache_size"] = l2_cache_size;
+    return out;
   }
-  return make_result(true, window_bytes, "");
+  py::dict out = make_result(true, window_bytes, "");
+  out["access_policy_max_window_size"] = access_policy_max_window_size;
+  out["persisting_l2_cache_max_size"] = persisting_l2_cache_max_size;
+  out["l2_cache_size"] = l2_cache_size;
+  return out;
 #else
   (void)stream_handle;
   (void)base_ptr;
   (void)window_bytes;
   (void)hit_ratio;
+  (void)device_index;
   return make_result(false, 0, "not_built_with_hip");
 #endif
 }
 
 py::dict clear_access_policy_window(std::uint64_t stream_handle) {
 #if defined(DIFFSPEC_WITH_HIP) || defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
-  if (stream_handle == 0) {
-    return make_result(false, 0, "empty_stream");
-  }
   hipStream_t stream = reinterpret_cast<hipStream_t>(stream_handle);
   hipStreamAttrValue attr{};
   attr.accessPolicyWindow.num_bytes = 0;
   hipError_t err = hipStreamSetAttribute(
       stream, hipStreamAttributeAccessPolicyWindow, &attr);
   if (err != hipSuccess) {
-    return make_result(false, 0, hipGetErrorString(err));
+    std::string reason = hipGetErrorString(err);
+    clear_last_hip_error();
+    return make_result(false, 0, reason);
   }
   return make_result(true, 0, "");
 #else

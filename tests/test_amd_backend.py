@@ -234,7 +234,57 @@ def test_validator_strict_requirements_fail_when_apw_is_not_applied():
     assert "hipcc" in failed_checks
     assert "residency_hint" in failed_checks
     assert "diffspec_working_cache_path.arena_statistics.residency" in failed_checks
+    assert "diffspec_engine_path.arena_statistics.residency" in failed_checks
     assert "arena_staging.statistics.compact_status" in failed_checks
+
+
+def test_validator_strict_requirements_include_engine_and_skip_secondary_when_requested():
+    applied_residency = {"applied": True, "reason": None}
+    applied_compact = {"applied": True, "reason": None}
+    output = {
+        "hipcc": {"available": True},
+        "checks": {
+            "residency_hint": applied_residency,
+            "arena_staging": {
+                "statistics": {
+                    "residency": applied_residency,
+                    "compact_status": applied_compact,
+                }
+            },
+            "diffspec_working_cache_path": {
+                "arena_statistics": {
+                    "residency": applied_residency,
+                    "compact_status": applied_compact,
+                }
+            },
+            "diffspec_engine_path": {
+                "arena_statistics": {
+                    "residency": {"applied": False, "reason": "engine_apw_not_applied"},
+                    "compact_status": applied_compact,
+                }
+            },
+            "secondary_device_compact_path": {
+                "passed": True,
+                "skipped": True,
+                "reason": "fewer_than_two_visible_gpus",
+            },
+        },
+    }
+
+    result = evaluate_strict_requirements(
+        output,
+        require_hipcc=True,
+        require_residency=True,
+        require_hip_compact=True,
+    )
+
+    assert result["passed"] is False
+    assert result["failures"] == [
+        {
+            "check": "diffspec_engine_path.arena_statistics.residency",
+            "reason": "engine_apw_not_applied",
+        }
+    ]
 
 
 def test_hip_profile_requirements_fail_when_apw_modes_do_not_enable_apw():

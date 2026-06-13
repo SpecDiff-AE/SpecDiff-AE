@@ -31,6 +31,8 @@ from diffspec.amd import (  # noqa: E402
     get_hip_runtime_extension_status,
     is_rocm_pytorch,
 )
+from diffspec.core.config import DiffSpecConfig  # noqa: E402
+from diffspec.core.diffspec_engine import DiffSpecEngine  # noqa: E402
 from diffspec.draft.draft_network import DraftNetwork  # noqa: E402
 
 
@@ -190,6 +192,119 @@ def validate_diffspec_working_cache_path(
     }
 
 
+def validate_diffspec_engine_path(
+    device: torch.device,
+    enable_residency: bool,
+) -> dict[str, Any]:
+    """Exercise DiffSpecEngine's ROCm component selection and arena update."""
+
+    config_device = "cuda" if device.type == "cuda" else str(device)
+    config = DiffSpecConfig(
+        enable_hazard_profile=False,
+        enable_chunk_arena=True,
+        enable_apw_residency=enable_residency,
+        top_k_chunks=2,
+        max_arena_chunks=2,
+        chunk_size=4,
+        num_layers=1,
+        num_heads=2,
+        head_dim=8,
+        device=config_device,
+    )
+    engine = DiffSpecEngine(config)
+    if not isinstance(engine.chunk_arena, AmdChunkArena):
+        return {
+            "passed": False,
+            "backend": type(engine.chunk_arena).__name__,
+            "reason": "engine_did_not_select_amd_chunk_arena",
+        }
+
+    key = torch.arange(
+        1 * config.num_heads * 16 * config.head_dim,
+        dtype=torch.float16,
+        device=device,
+    ).view(1, config.num_heads, 16, config.head_dim)
+    value = key + 1000
+    spans = [(0, 0, 4), (2, 8, 12)]
+    view = engine.chunk_arena.update(spans, [(key, value)])
+    working_kv = engine.chunk_arena.as_kv_list()
+    expected_k = torch.cat(
+        [key[:, :, start:end, :] for _, start, end in spans],
+        dim=2,
+    )
+    expected_v = torch.cat(
+        [value[:, :, start:end, :] for _, start, end in spans],
+        dim=2,
+    )
+    torch.testing.assert_close(working_kv[0][0], expected_k)
+    torch.testing.assert_close(working_kv[0][1], expected_v)
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+    stats = engine.chunk_arena.get_statistics()
+    return {
+        "passed": True,
+        "method": "DiffSpecEngine._init_components+AmdChunkArena.update",
+        "backend": getattr(engine.chunk_arena, "backend_name", None),
+        "view_shape": list(view.shape),
+        "working_len": int(working_kv[0][0].size(2)),
+        "arena_statistics": stats,
+    }
+
+
+def validate_secondary_device_compact_path(enable_residency: bool) -> dict[str, Any]:
+    """Exercise HIP compact on a non-current GPU when one is visible."""
+
+    if torch.cuda.device_count() < 2:
+        return {
+            "passed": True,
+            "skipped": True,
+            "reason": "fewer_than_two_visible_gpus",
+        }
+
+    device = torch.device("cuda:1")
+    config = AmdArenaConfig(
+        max_chunks=2,
+        chunk_size=4,
+        num_layers=1,
+        num_heads=2,
+        head_dim=8,
+        device=str(device),
+        dtype=torch.float16,
+        enable_residency_hint=enable_residency,
+        residency=AmdResidencyConfig(enable=enable_residency, hit_ratio=0.85),
+    )
+    arena = AmdChunkArena(config)
+    key = torch.arange(
+        config.batch_size * config.num_heads * 16 * config.head_dim,
+        dtype=torch.float16,
+        device=device,
+    ).view(config.batch_size, config.num_heads, 16, config.head_dim)
+    value = key + 1000
+    spans = [(0, 0, 4), (2, 8, 12)]
+    view = arena.update(spans, [(key, value)])
+    working_kv = arena.as_kv_list()
+    expected_k = torch.cat(
+        [key[:, :, start:end, :] for _, start, end in spans],
+        dim=2,
+    )
+    expected_v = torch.cat(
+        [value[:, :, start:end, :] for _, start, end in spans],
+        dim=2,
+    )
+    torch.testing.assert_close(working_kv[0][0], expected_k)
+    torch.testing.assert_close(working_kv[0][1], expected_v)
+    torch.cuda.synchronize(device)
+
+    return {
+        "passed": True,
+        "device": str(device),
+        "view_shape": list(view.shape),
+        "working_len": int(working_kv[0][0].size(2)),
+        "arena_statistics": arena.get_statistics(),
+    }
+
+
 def evaluate_strict_requirements(
     output: dict[str, Any],
     *,
@@ -225,7 +340,24 @@ def evaluate_strict_requirements(
                 .get("arena_statistics", {})
                 .get("residency"),
             ),
+            (
+                "diffspec_engine_path.arena_statistics.residency",
+                output["checks"]
+                .get("diffspec_engine_path", {})
+                .get("arena_statistics", {})
+                .get("residency"),
+            ),
         ]
+        secondary_device = output["checks"].get("secondary_device_compact_path", {})
+        if not secondary_device.get("skipped", False):
+            status_paths.append(
+                (
+                    "secondary_device_compact_path.arena_statistics.residency",
+                    secondary_device
+                    .get("arena_statistics", {})
+                    .get("residency"),
+                )
+            )
         for name, status in status_paths:
             if not status or not status.get("applied", False):
                 failures.append(
@@ -255,7 +387,24 @@ def evaluate_strict_requirements(
                 .get("arena_statistics", {})
                 .get("compact_status"),
             ),
+            (
+                "diffspec_engine_path.arena_statistics.compact_status",
+                output["checks"]
+                .get("diffspec_engine_path", {})
+                .get("arena_statistics", {})
+                .get("compact_status"),
+            ),
         ]
+        secondary_device = output["checks"].get("secondary_device_compact_path", {})
+        if not secondary_device.get("skipped", False):
+            compact_paths.append(
+                (
+                    "secondary_device_compact_path.arena_statistics.compact_status",
+                    secondary_device
+                    .get("arena_statistics", {})
+                    .get("compact_status"),
+                )
+            )
         for name, status in compact_paths:
             if not status or not status.get("applied", False):
                 failures.append(
@@ -345,6 +494,13 @@ def main() -> int:
     output["checks"]["arena_staging"] = validate_arena(device, enable_residency)
     output["checks"]["diffspec_working_cache_path"] = validate_diffspec_working_cache_path(
         device,
+        enable_residency,
+    )
+    output["checks"]["diffspec_engine_path"] = validate_diffspec_engine_path(
+        device,
+        enable_residency,
+    )
+    output["checks"]["secondary_device_compact_path"] = validate_secondary_device_compact_path(
         enable_residency,
     )
     output["checks"]["strict_requirements"] = evaluate_strict_requirements(

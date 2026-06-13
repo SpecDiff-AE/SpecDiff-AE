@@ -202,16 +202,45 @@ __global__ void arena_lds_kernel(const float* __restrict__ arena,
   }
 }
 
+int device_attribute_or_zero(hipDeviceAttribute_t attr) {
+  int device = 0;
+  hipError_t device_err = hipGetDevice(&device);
+  if (device_err != hipSuccess) {
+    (void)hipGetLastError();
+    return 0;
+  }
+  int value = 0;
+  hipError_t attr_err = hipDeviceGetAttribute(&value, attr, device);
+  if (attr_err != hipSuccess) {
+    (void)hipGetLastError();
+    return 0;
+  }
+  return value;
+}
+
 void configure_apw(hipStream_t stream,
                    const void* ptr,
                    size_t bytes,
                    float hit_ratio,
                    bool* enabled,
                    size_t* window_bytes,
+                   int* access_policy_max_window_size,
+                   int* persisting_l2_cache_max_size,
+                   int* l2_cache_size,
                    std::string* error) {
   *enabled = false;
   *window_bytes = 0;
   *error = "";
+  *access_policy_max_window_size =
+      device_attribute_or_zero(hipDeviceAttributeAccessPolicyMaxWindowSize);
+  *persisting_l2_cache_max_size =
+      device_attribute_or_zero(hipDeviceAttributePersistingL2CacheMaxSize);
+  *l2_cache_size = device_attribute_or_zero(hipDeviceAttributeL2CacheSize);
+  if (*access_policy_max_window_size <= 0) {
+    *error = "access_policy_window_unsupported";
+    return;
+  }
+  bytes = std::min(bytes, static_cast<size_t>(*access_policy_max_window_size));
   hipStreamAttrValue attr{};
   attr.accessPolicyWindow.base_ptr = const_cast<void*>(ptr);
   attr.accessPolicyWindow.num_bytes = bytes;
@@ -225,6 +254,7 @@ void configure_apw(hipStream_t stream,
     *window_bytes = bytes;
   } else {
     *error = hipGetErrorString(err);
+    (void)hipGetLastError();
   }
 }
 
@@ -332,11 +362,15 @@ int main(int argc, char** argv) {
 
   bool apw_enabled = false;
   size_t apw_window_bytes = 0;
+  int apw_max_window_bytes = 0;
+  int persisting_l2_cache_max_bytes = 0;
+  int l2_cache_bytes = 0;
   std::string apw_error;
   if (args.mode == "arena_apw" || args.mode == "arena_apw_lds" ||
       args.mode == "arena_apw_tma") {
     configure_apw(stream, arena, active_elems * sizeof(float), args.apw_hit_ratio,
-                  &apw_enabled, &apw_window_bytes, &apw_error);
+                  &apw_enabled, &apw_window_bytes, &apw_max_window_bytes,
+                  &persisting_l2_cache_max_bytes, &l2_cache_bytes, &apw_error);
   }
   bool lds_tma_mode = args.mode == "arena_apw_lds" || args.mode == "arena_apw_tma";
 
@@ -369,6 +403,12 @@ int main(int argc, char** argv) {
             << active_elems * sizeof(float) * size_t(args.passes) << ",\n";
   std::cout << "  \"apw_enabled\": " << (apw_enabled ? "true" : "false") << ",\n";
   std::cout << "  \"apw_window_bytes\": " << apw_window_bytes << ",\n";
+  std::cout << "  \"apw_supported\": "
+            << (apw_max_window_bytes > 0 ? "true" : "false") << ",\n";
+  std::cout << "  \"apw_max_window_bytes\": " << apw_max_window_bytes << ",\n";
+  std::cout << "  \"persisting_l2_cache_max_bytes\": "
+            << persisting_l2_cache_max_bytes << ",\n";
+  std::cout << "  \"l2_cache_bytes\": " << l2_cache_bytes << ",\n";
   std::cout << "  \"apw_error\": \"" << apw_error << "\",\n";
   std::cout << "  \"tma_analogue_backend\": \""
             << (lds_tma_mode ? "lds_tile_staging" : "none")
